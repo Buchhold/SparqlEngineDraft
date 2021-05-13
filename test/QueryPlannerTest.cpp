@@ -827,13 +827,7 @@ TEST(QueryPlannerTest, threeVarTriplesTCJ) {
                          "<s> ?p ?x . ?x ?p ?o }")
                          .parse();
     QueryPlanner qp(nullptr);
-    QueryExecutionTree qet = qp.createExecutionTree(pq);
-    ASSERT_EQ(
-        "{\n  TWO_COLUMN_JOIN\n    {\n    SCAN FOR FULL INDEX POS (DUMMY "
-        "OPERATION)\n    qet-width: 3 \n  }\n  join-columns: [0 & 2]\n  |X|\n  "
-        "  {\n    SCAN SPO with S = \"<s>\"\n    qet-width: 2 \n  }\n  "
-        "join-columns: [0 & 1]\n  qet-width: 3 \n}",
-        qet.asString());
+    ASSERT_THROW(qp.createExecutionTree(pq), ad_semsearch::Exception);
   } catch (const ad_semsearch::Exception& e) {
     std::cout << "Caught: " << e.getFullErrorMessage() << std::endl;
     FAIL() << e.getFullErrorMessage();
@@ -848,13 +842,8 @@ TEST(QueryPlannerTest, threeVarTriplesTCJ) {
                          "?s ?p ?o . ?s ?p <x> }")
                          .parse();
     QueryPlanner qp(nullptr);
-    QueryExecutionTree qet = qp.createExecutionTree(pq);
-    ASSERT_EQ(
-        "{\n  TWO_COLUMN_JOIN\n    {\n    SCAN FOR FULL INDEX POS (DUMMY "
-        "OPERATION)\n    qet-width: 3 \n  }\n  join-columns: [0 & 2]\n  |X|\n  "
-        "  {\n    SCAN OPS with O = \"<x>\"\n    qet-width: 2 \n  }\n  "
-        "join-columns: [0 & 1]\n  qet-width: 3 \n}",
-        qet.asString());
+    ASSERT_THROW(QueryExecutionTree qet = qp.createExecutionTree(pq),
+                 ad_semsearch::Exception);
   } catch (const ad_semsearch::Exception& e) {
     std::cout << "Caught: " << e.getFullErrorMessage() << std::endl;
     FAIL() << e.getFullErrorMessage();
@@ -872,7 +861,7 @@ TEST(QueryPlannerTest, threeVarXthreeVarException) {
                          .parse();
     QueryPlanner qp(nullptr);
     QueryExecutionTree qet = qp.createExecutionTree(pq);
-    FAIL() << "Was expecting exception" << std::endl;
+    FAIL() << "Was expecting exception, but got" << qet.asString() << std::endl;
   } catch (const ad_semsearch::Exception& e) {
     ASSERT_EQ(
         "Could not find a suitable execution tree. "

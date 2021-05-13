@@ -42,11 +42,10 @@ class TwoColumnJoin : public Operation {
       return _left->getSizeEstimate() + _left->getCostEstimate() +
              _right->getSizeEstimate() + _right->getCostEstimate();
     }
-    // The case where the above condition does not hold is currently
-    // not implemented so really don't use it!
-    // Important: The / 1000000 prevents overflow
-    // TODO(schnelle) this is pretty fragile
-    return std::numeric_limits<size_t>::max() / 1000000;
+    // TOOD: implement the other case later
+    AD_THROW(
+        ad_semsearch::Exception::NOT_YET_IMPLEMENTED,
+        "For now, prefer cyclic queries to be resolved using a single join.")
   }
 
   virtual bool knownEmptyResult() override {
