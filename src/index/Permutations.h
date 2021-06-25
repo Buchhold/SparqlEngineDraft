@@ -9,6 +9,7 @@
 #include "../global/Constants.h"
 #include "../util/File.h"
 #include "../util/Log.h"
+#include "./IndexMetaData.h"
 #include "./StxxlSortFunctors.h"
 
 namespace Permutation {
@@ -67,5 +68,13 @@ class PermutationImpl {
 
   mutable ad_utility::File _file;
 };
+
+// Type aliases for the 6 permutations used by QLever
+using POS_T = PermutationImpl<SortByPOS, IndexMetaDataHmap>;
+using PSO_T = PermutationImpl<SortByPSO, IndexMetaDataHmap>;
+using SOP_T = Permutation::PermutationImpl<SortBySOP, IndexMetaDataMmapView>;
+using SPO_T = PermutationImpl<SortBySPO, IndexMetaDataMmapView>;
+using OPS_T = PermutationImpl<SortByOPS, IndexMetaDataMmapView>;
+using OSP_T = PermutationImpl<SortByOSP, IndexMetaDataMmapView>;
 
 }  // namespace Permutation
