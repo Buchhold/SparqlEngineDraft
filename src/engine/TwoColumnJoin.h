@@ -39,8 +39,16 @@ class TwoColumnJoin : public Operation {
   virtual size_t getCostEstimate() override {
     if ((_left->getResultWidth() == 2 && _jc1Left == 0 && _jc2Left == 1) ||
         (_right->getResultWidth() == 2 && _jc1Right == 0 && _jc2Right == 1)) {
-      return _left->getSizeEstimate() + _left->getCostEstimate() +
-             _right->getSizeEstimate() + _right->getCostEstimate();
+      size_t sizeEstimate =
+          _left->getSizeEstimate() + _left->getCostEstimate() +
+          _right->getSizeEstimate() + _right->getCostEstimate();
+      if (!_executionContext) {
+        // make the cost Estimate deterministic for the unit tests
+        auto h = std::hash<std::string>{};
+        sizeEstimate += h(_left->asString()) & 4;
+        sizeEstimate += h(_right->asString()) & 8;
+      }
+      return sizeEstimate;
     }
     // TOOD: implement the other case later
     AD_THROW(

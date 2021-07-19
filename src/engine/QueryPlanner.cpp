@@ -1855,6 +1855,8 @@ vector<QueryPlanner::SubtreePlan> QueryPlanner::merge(
              << b.size() << " plans...\n";
   for (const auto& ai : a) {
     for (const auto& bj : b) {
+      LOG(TRACE) << "Creating join candidates for " << ai._qet->asString()
+                 << "\n and " << bj._qet->asString() << '\n';
       auto v = createJoinCandidates(ai, bj, tg);
       for (auto& plan : v) {
         candidates[getPruningKey(plan, plan._qet->resultSortedOn())]
@@ -1870,11 +1872,26 @@ vector<QueryPlanner::SubtreePlan> QueryPlanner::merge(
   // as key.
   LOG(TRACE) << "Pruning...\n";
   vector<SubtreePlan> prunedPlans;
-  for (auto& [key, value] : candidates) {
-    (void)key;  // silence unused warning
-    size_t minIndex = findCheapestExecutionTree(value);
-    prunedPlans.push_back(std::move(value[minIndex]));
+
+  auto pruneCandidates = [&](auto& actualCandidates) {
+    for (auto& [key, value] : actualCandidates) {
+      (void)key;  // silence unused warning
+      size_t minIndex = findCheapestExecutionTree(value);
+      prunedPlans.push_back(std::move(value[minIndex]));
+    }
+  };
+
+  if (isInTestMode()) {
+    std::vector<std::pair<string, vector<SubtreePlan>>> sortedCandidates{
+        std::make_move_iterator(candidates.begin()),
+        std::make_move_iterator(candidates.end())};
+    std::sort(sortedCandidates.begin(), sortedCandidates.end(),
+              [](const auto& a, const auto& b) { return a.first < b.first; });
+    pruneCandidates(sortedCandidates);
+  } else {
+    pruneCandidates(candidates);
   }
+
   LOG(TRACE) << "Got " << prunedPlans.size() << " pruned plans from \n";
   return prunedPlans;
 }
@@ -2761,8 +2778,14 @@ size_t QueryPlanner::findCheapestExecutionTree(
 
 // _____________________________________________________________________________
 std::vector<QueryPlanner::SubtreePlan> QueryPlanner::createJoinCandidates(
-    const SubtreePlan& a, const SubtreePlan& b,
+    const SubtreePlan& ain, const SubtreePlan& bin,
     std::optional<TripleGraph> tg) const {
+  const auto& a = !isInTestMode() || ain._qet->asString() < bin._qet->asString()
+                      ? ain
+                      : bin;
+  const auto& b = !isInTestMode() || ain._qet->asString() < bin._qet->asString()
+                      ? bin
+                      : ain;
   std::vector<SubtreePlan> candidates;
 
   // TODO<joka921> find out, what is ACTUALLY the use case for the triple

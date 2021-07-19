@@ -1091,7 +1091,21 @@ TEST(QueryExecutionTreeTest, testCyclicQuery) {
     pq.expandPrefixes();
     QueryPlanner qp(nullptr);
     QueryExecutionTree qet = qp.createExecutionTree(pq);
-    ASSERT_EQ(
+
+    // There are three possible outcomes of this test with the same size
+    // estimate. It is currently very hard to make the query planning
+    // deterministic in a test scenario, so we allow all three candidates
+    std::string possible1 =
+        "{\n  TWO_COLUMN_JOIN\n    {\n    SCAN PSO with P = "
+        "\"<Film_performance>\"\n    qet-width: 2 \n  }\n  join-columns: [0 & "
+        "1]\n  |X|\n    {\n    SORT / ORDER BY on columns:asc(2) asc(1) \n    "
+        "{\n      JOIN\n      {\n        SCAN PSO with P = "
+        "\"<Film_performance>\"\n        qet-width: 2 \n      } join-column: "
+        "[0]\n      |X|\n      {\n        SCAN PSO with P = "
+        "\"<Spouse_(or_domestic_partner)>\"\n        qet-width: 2 \n      } "
+        "join-column: [0]\n      qet-width: 3 \n    }\n    qet-width: 3 \n  "
+        "}\n  join-columns: [2 & 1]\n  qet-width: 3 \n}";
+    std::string possible2 =
         "{\n  TWO_COLUMN_JOIN\n    {\n    SCAN POS with P = "
         "\"<Film_performance>\"\n    qet-width: 2 \n  }\n  join-columns: [0 & "
         "1]\n  |X|\n    {\n    SORT / ORDER BY on columns:asc(1) asc(2) \n    "
@@ -1100,8 +1114,25 @@ TEST(QueryExecutionTreeTest, testCyclicQuery) {
         "[0]\n      |X|\n      {\n        SCAN PSO with P = "
         "\"<Spouse_(or_domestic_partner)>\"\n        qet-width: 2 \n      } "
         "join-column: [0]\n      qet-width: 3 \n    }\n    qet-width: 3 \n  "
-        "}\n  join-columns: [1 & 2]\n  qet-width: 3 \n}",
-        qet.asString());
+        "}\n  join-columns: [1 & 2]\n  qet-width: 3 \n}";
+    std::string possible3 =
+        "{\n  TWO_COLUMN_JOIN\n    {\n    SCAN POS with P = "
+        "\"<Spouse_(or_domestic_partner)>\"\n    qet-width: 2 \n  }\n  "
+        "join-columns: [0 & 1]\n  |X|\n    {\n    SORT / ORDER BY on "
+        "columns:asc(1) asc(2) \n    {\n      JOIN\n      {\n        SCAN POS "
+        "with P = \"<Film_performance>\"\n        qet-width: 2 \n      } "
+        "join-column: [0]\n      |X|\n      {\n        SCAN POS with P = "
+        "\"<Film_performance>\"\n        qet-width: 2 \n      } join-column: "
+        "[0]\n      qet-width: 3 \n    }\n    qet-width: 3 \n  }\n  "
+        "join-columns: [1 & 2]\n  qet-width: 3 \n}";
+    auto actual = qet.asString();
+
+    if (actual != possible1 && actual != possible2 && actual != possible3) {
+      FAIL() << "query execution tree is none of the possible trees, it is "
+                "actually "
+             << actual << '\n';
+    }
+
   } catch (const ad_semsearch::Exception& e) {
     std::cout << "Caught: " << e.getFullErrorMessage() << std::endl;
     FAIL() << e.getFullErrorMessage();
