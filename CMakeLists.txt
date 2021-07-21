@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 2.8.4)
 project(QLever C CXX)
 
 # C/C++ Versions
-set(CMAKE_C_STANDARD 11)
+set (CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -110,7 +110,14 @@ if (USE_PARALLEL)
         set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
         add_definitions("-D_PARALLEL_SORT")
+
     endif ()
+
+    find_package(TBB REQUIRED)
+    message("TBB libraries found: ${TBB_LIBRARIES}")
+    link_libraries(tbb)
+
+
 endif()
 
 if (USE_TREE_BASED_CACHE)
@@ -200,9 +207,6 @@ target_link_libraries (ServerMain engine ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(WriteIndexListsMain src/WriteIndexListsMain.cpp)
 target_link_libraries (WriteIndexListsMain engine ${CMAKE_THREAD_LIBS_INIT})
-
-add_executable(MetaDataConverterMain src/MetaDataConverterMain.cpp)
-target_link_libraries (MetaDataConverterMain metaConverter ${CMAKE_THREAD_LIBS_INIT})
 
 add_executable(PrefixHeuristicEvaluatorMain src/PrefixHeuristicEvaluatorMain.cpp)
 target_link_libraries (PrefixHeuristicEvaluatorMain index ${CMAKE_THREAD_LIBS_INIT})

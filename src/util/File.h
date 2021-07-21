@@ -54,8 +54,22 @@ class File {
     open(filename, mode);
   }
 
+  // TODO<joka921> This copies non-owning pointer semantics which is really
+  // dangerous. This operator should be deleted.
   File& operator=(const File&) = default;
 
+  File& operator=(File&& rhs) noexcept {
+    _file = rhs._file;
+    rhs._file = nullptr;
+    _name = std::move(rhs._name);
+    return *this;
+  }
+
+  File(File&& rhs) : _name{std::move(rhs._name)}, _file{rhs._file} {
+    rhs._file = nullptr;
+  }
+
+  // TODO<joka921> should also be deleted!
   //! Copy constructor.
   //! Does not copy the file in the file system!
   File(const File& orig) {
@@ -119,6 +133,16 @@ class File {
   size_t read(void* targetBuffer, size_t nofBytesToRead) {
     assert(_file);
     return fread(targetBuffer, (size_t)1, nofBytesToRead, _file);
+  }
+
+  void readOrThrow(void* dest, size_t count) {
+    size_t num_read = read(dest, count);
+    if (num_read != count) {
+      throw std::runtime_error("File::readOrThrow: Unable to read " +
+                               std::to_string(count) + " bytes, read " +
+                               std::to_string(num_read) +
+                               " instead: " + std::string(strerror((errno))));
+    }
   }
 
   // Reads a line from the file into param line and interprets it as ASCII.

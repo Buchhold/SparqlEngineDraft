@@ -109,12 +109,13 @@ size_t CountAvailablePredicates::getSizeEstimate() {
     // for the type of optimizations the optimizer can currently do.
     size_t num_distinct = _subtree->getSizeEstimate() /
                           _subtree->getMultiplicity(_subjectColumnIndex);
-    return num_distinct / getIndex().getHasPredicateMultiplicityPredicates();
+    return num_distinct /
+           getIndex().getPatternIndex().getHasPredicateMultiplicityPredicates();
   } else {
     // Predicates are counted for all entities. In this case the size estimate
     // should be accurate.
-    return getIndex().getHasPredicateFullSize() /
-           getIndex().getHasPredicateMultiplicityPredicates();
+    return getIndex().getPatternIndex().getHasPredicateFullSize() /
+           getIndex().getPatternIndex().getHasPredicateMultiplicityPredicates();
   }
 }
 
@@ -139,14 +140,28 @@ void CountAvailablePredicates::computeResult(ResultTable* result) {
   result->_resultTypes.push_back(ResultTable::ResultType::KB);
   result->_resultTypes.push_back(ResultTable::ResultType::VERBATIM);
 
+  auto visitor = [&](const auto& patternImpl) {
+    computeResult(result, patternImpl);
+  };
+
+  std::visit(visitor,
+             _executionContext->getIndex().getPatternIndex().getPatternData());
+
+  LOG(DEBUG) << "CountAvailablePredicates result computation done."
+             << std::endl;
+}
+
+template <typename PredicateId>
+void CountAvailablePredicates::computeResult(
+    ResultTable* result,
+    const PatternContainerImpl<PredicateId>& pattern_data) {
   RuntimeInformation& runtimeInfo = getRuntimeInfo();
 
-  const std::vector<PatternID>& hasPattern =
-      _executionContext->getIndex().getHasPattern();
-  const CompactStringVector<Id, Id>& hasPredicate =
-      _executionContext->getIndex().getHasPredicate();
-  const CompactStringVector<size_t, Id>& patterns =
-      _executionContext->getIndex().getPatterns();
+  const auto& hasPattern = pattern_data.hasPattern();
+  const auto& hasPredicate = pattern_data.hasPredicate();
+  const auto& patterns = pattern_data.patterns();
+  const auto& predicateGlobalIds =
+      _executionContext->getIndex().getPatternIndex().getPredicateGlobalIds();
 
   if (_subjectEntityName) {
     size_t entityId;
@@ -158,12 +173,12 @@ void CountAvailablePredicates::computeResult(ResultTable* result) {
       int width = input.cols();
       CALL_FIXED_SIZE_1(width, CountAvailablePredicates::computePatternTrick,
                         input, &result->_data, hasPattern, hasPredicate,
-                        patterns, 0, &runtimeInfo);
+                        patterns, predicateGlobalIds, 0, &runtimeInfo);
     }
   } else if (_subtree == nullptr) {
     // Compute the predicates for all entities
     CountAvailablePredicates::computePatternTrickAllEntities(
-        &result->_data, hasPattern, hasPredicate, patterns);
+        &result->_data, hasPattern, hasPredicate, patterns, predicateGlobalIds);
   } else {
     std::shared_ptr<const ResultTable> subresult = _subtree->getResult();
     runtimeInfo.addChild(_subtree->getRootOperation()->getRuntimeInfo());
@@ -173,17 +188,19 @@ void CountAvailablePredicates::computeResult(ResultTable* result) {
     int width = subresult->_data.cols();
     CALL_FIXED_SIZE_1(width, CountAvailablePredicates::computePatternTrick,
                       subresult->_data, &result->_data, hasPattern,
-                      hasPredicate, patterns, _subjectColumnIndex,
-                      &runtimeInfo);
+                      hasPredicate, patterns, predicateGlobalIds,
+                      _subjectColumnIndex, &runtimeInfo);
   }
   LOG(DEBUG) << "CountAvailablePredicates result computation done."
              << std::endl;
 }
 
+template <typename PredicateId>
 void CountAvailablePredicates::computePatternTrickAllEntities(
     IdTable* dynResult, const vector<PatternID>& hasPattern,
-    const CompactStringVector<Id, Id>& hasPredicate,
-    const CompactStringVector<size_t, Id>& patterns) {
+    const CompactStringVector<Id, PredicateId>& hasPredicate,
+    const CompactStringVector<size_t, PredicateId>& patterns,
+    const std::vector<Id>& predicateGlobalIds) {
   IdTableStatic<2> result = dynResult->moveToStatic<2>();
   LOG(DEBUG) << "For all entities." << std::endl;
   ad_utility::HashMap<Id, size_t> predicateCounts;
@@ -194,17 +211,11 @@ void CountAvailablePredicates::computePatternTrickAllEntities(
     if (i < hasPattern.size() && hasPattern[i] != NO_PATTERN) {
       patternCounts[hasPattern[i]]++;
     } else if (i < hasPredicate.size()) {
-      size_t numPredicates;
-      const Id* predicateData;
-      std::tie(predicateData, numPredicates) = hasPredicate[i];
+      const auto& [predicateData, numPredicates] = hasPredicate[i];
       if (numPredicates > 0) {
-        for (size_t i = 0; i < numPredicates; i++) {
-          auto it = predicateCounts.find(predicateData[i]);
-          if (it == predicateCounts.end()) {
-            predicateCounts[predicateData[i]] = 1;
-          } else {
-            it->second++;
-          }
+        for (size_t j = 0; j < numPredicates; j++) {
+          Id predicate = predicateGlobalIds[predicateData[j]];
+          predicateCounts[predicate]++;
         }
       }
     }
@@ -215,7 +226,7 @@ void CountAvailablePredicates::computePatternTrickAllEntities(
   for (const auto& it : patternCounts) {
     const auto& pattern = patterns[it.first];
     for (size_t i = 0; i < pattern.second; i++) {
-      predicateCounts[pattern.first[i]] += it.second;
+      predicateCounts[predicateGlobalIds[pattern.first[i]]] += it.second;
     }
   }
   result.reserve(predicateCounts.size());
@@ -225,80 +236,132 @@ void CountAvailablePredicates::computePatternTrickAllEntities(
   *dynResult = result.moveToDynamic();
 }
 
-template <int WIDTH>
+/**
+ * @ brief A Hashmap from T to size_t which additionally supports merging of
+ * Hashmaps
+ *
+ * publicly inherits from ad_utility::HashMap<T, size_t> and additionally
+ * provides operator%= which merges Hashmaps by adding the values for
+ * corresponding keys. This is needed for the parallel pattern trick
+ *
+ */
+template <typename T>
+class MergeableHashmap : public ad_utility::HashMap<T, size_t> {
+ public:
+  MergeableHashmap& operator%=(const MergeableHashmap& rhs) {
+    for (const auto& [key, value] : rhs) {
+      (*this)[key] += value;
+    }
+    return *this;
+  }
+};
+
+using MergeableId = MergeableHashmap<Id>;
+using MergeableSizeT = MergeableHashmap<size_t>;
+
+template <int WIDTH, typename PredicateId>
 void CountAvailablePredicates::computePatternTrick(
     const IdTable& dynInput, IdTable* dynResult,
     const vector<PatternID>& hasPattern,
-    const CompactStringVector<Id, Id>& hasPredicate,
-    const CompactStringVector<size_t, Id>& patterns, const size_t subjectColumn,
+    const CompactStringVector<Id, PredicateId>& hasPredicate,
+    const CompactStringVector<size_t, PredicateId>& patterns,
+    const std::vector<Id>& predicateGlobalIds, const size_t subjectColumn,
     RuntimeInformation* runtimeInfo) {
   const IdTableView<WIDTH> input = dynInput.asStaticView<WIDTH>();
   IdTableStatic<2> result = dynResult->moveToStatic<2>();
   LOG(DEBUG) << "For " << input.size() << " entities in column "
              << subjectColumn << std::endl;
 
-  ad_utility::HashMap<Id, size_t> predicateCounts;
-  ad_utility::HashMap<size_t, size_t> patternCounts;
-  size_t inputIdx = 0;
+  MergeableId predicateCounts;
+  MergeableSizeT patternCounts;
+
+  // declare openmp reductions which aggregate Hashmaps by adding the values for
+  // corresponding keys
+#pragma omp declare reduction(MergeHashmapsId:MergeableId : omp_out %= omp_in)
+#pragma omp declare reduction(MergeHashmapsSizeT:MergeableSizeT \
+                              : omp_out %= omp_in)
+
   // These variables are used to gather additional statistics
   size_t numEntitiesWithPatterns = 0;
   // the number of distinct predicates in patterns
   size_t numPatternPredicates = 0;
   // the number of predicates counted without patterns
   size_t numListPredicates = 0;
-  Id lastSubject = ID_NO_VALUE;
-  while (inputIdx < input.size()) {
-    // Skip over elements with the same subject (don't count them twice)
-    Id subject = input(inputIdx, subjectColumn);
-    if (subject == lastSubject) {
-      inputIdx++;
-      continue;
-    }
-    lastSubject = subject;
-    if (subject < hasPattern.size() && hasPattern[subject] != NO_PATTERN) {
-      // The subject matches a pattern
-      patternCounts[hasPattern[subject]]++;
-      numEntitiesWithPatterns++;
-    } else if (subject < hasPredicate.size()) {
-      // The subject does not match a pattern
-      size_t numPredicates;
-      const Id* predicateData;
-      std::tie(predicateData, numPredicates) = hasPredicate[subject];
-      numListPredicates += numPredicates;
-      if (numPredicates > 0) {
-        for (size_t i = 0; i < numPredicates; i++) {
-          predicateCounts[predicateData[i]]++;
+
+  if (input.size() > 0) {  // avoid strange OpenMP segfaults on GCC
+#pragma omp parallel
+#pragma omp single
+#pragma omp taskloop grainsize(500000) default(none) reduction(MergeHashmapsId:predicateCounts) reduction(MergeHashmapsSizeT : patternCounts) \
+                                       reduction(+ : numEntitiesWithPatterns) reduction(+: numPatternPredicates) reduction(+: numListPredicates) shared(input, subjectColumn, hasPattern, hasPredicate, predicateGlobalIds)
+    for (size_t inputIdx = 0; inputIdx < input.size(); ++inputIdx) {
+      // Skip over elements with the same subject (don't count them twice)
+      Id subject = input(inputIdx, subjectColumn);
+      if (inputIdx > 0 && subject == input(inputIdx - 1, subjectColumn)) {
+        continue;
+      }
+
+      if (subject < hasPattern.size() && hasPattern[subject] != NO_PATTERN) {
+        // The subject matches a pattern
+        patternCounts[hasPattern[subject]]++;
+        numEntitiesWithPatterns++;
+      } else if (subject < hasPredicate.size()) {
+        // The subject does not match a pattern
+        const auto& [predicateData, numPredicates] = hasPredicate[subject];
+        numListPredicates += numPredicates;
+        if (numPredicates > 0) {
+          for (size_t i = 0; i < numPredicates; i++) {
+          Id predicate = predicateGlobalIds[predicateData[i]];
+          predicateCounts[predicate]++;
+          }
+        } else {
+          LOG(TRACE) << "No pattern or has-relation entry found for entity "
+                     << std::to_string(subject) << std::endl;
         }
       } else {
-        LOG(TRACE) << "No pattern or has-relation entry found for entity "
-                   << std::to_string(subject) << std::endl;
+        LOG(TRACE) << "Subject " << subject
+                   << " does not appear to be an entity "
+                      "(its id is to high)."
+                   << std::endl;
       }
-    } else {
-      LOG(TRACE) << "Subject " << subject
-                 << " does not appear to be an entity "
-                    "(its id is to high)."
-                 << std::endl;
     }
-    inputIdx++;
   }
   LOG(DEBUG) << "Using " << patternCounts.size()
              << " patterns for computing the result." << std::endl;
   // the number of predicates counted with patterns
   size_t numPredicatesSubsumedInPatterns = 0;
   // resolve the patterns to predicate counts
-  for (const auto& it : patternCounts) {
-    const auto& pattern = patterns[it.first];
-    numPatternPredicates += pattern.second;
-    for (size_t i = 0; i < pattern.second; i++) {
-      predicateCounts[pattern.first[i]] += it.second;
-      numPredicatesSubsumedInPatterns += it.second;
+
+  LOG(DEBUG) << "Converting PatternMap to vector" << std::endl;
+  // flatten into a vector, to make iterable
+  std::vector<std::pair<size_t, size_t>> patternVec;
+  patternVec.reserve(patternCounts.size());
+  for (const auto& p : patternCounts) {
+    patternVec.push_back(p);
+  }
+
+  LOG(DEBUG) << "Start convertin patterns" << std::endl;
+  if (patternVec.begin() !=
+      patternVec.end()) {  // avoid segfaults with OpenMP on GCC
+#pragma omp parallel
+#pragma omp single
+#pragma omp taskloop grainsize(100000) default(none) reduction(MergeHashmapsId:predicateCounts) reduction(+ : numPredicatesSubsumedInPatterns) \
+                                       reduction(+ : numEntitiesWithPatterns) reduction(+: numPatternPredicates) reduction(+: numListPredicates) shared( patternVec, patterns, predicateGlobalIds)
+    for (auto it = patternVec.begin(); it != patternVec.end(); ++it) {
+      const auto& pattern = patterns[it->first];
+      numPatternPredicates += pattern.second;
+      for (size_t i = 0; i < pattern.second; i++) {
+      predicateCounts[predicateGlobalIds[pattern.first[i]]] += it->second;
+      numPredicatesSubsumedInPatterns += it->second;
+      }
     }
   }
+  LOG(DEBUG) << "Finished converting patterns" << std::endl;
   // write the predicate counts to the result
   result.reserve(predicateCounts.size());
   for (const auto& it : predicateCounts) {
     result.push_back({it.first, static_cast<Id>(it.second)});
   }
+  LOG(DEBUG) << "Finished writing results" << std::endl;
 
   // Print interesting statistics about the pattern trick
   double ratioHasPatterns =
