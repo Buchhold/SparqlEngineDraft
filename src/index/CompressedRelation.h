@@ -25,13 +25,13 @@ struct CompressedBlockMetaData {
 
 template <typename Serializer>
 void serialize(Serializer& s, CompressedBlockMetaData& b) {
-  s& b._offsetInFile;
-  s& b._compressedSize;
-  s& b._numberOfElements;
-  s& b._firstLhs;
-  s& b._firstRhs;
-  s& b._lastLhs;
-  s& b._lastRhs;
+  s | b._offsetInFile;
+  s | b._compressedSize;
+  s | b._numberOfElements;
+  s | b._firstLhs;
+  s | b._firstRhs;
+  s | b._lastLhs;
+  s | b._lastRhs;
 }
 
 struct CompressedRelationMetaData {
@@ -105,12 +105,12 @@ struct CompressedRelationMetaData {
 
 template <class Serializer>
 void serialize(Serializer& s, CompressedRelationMetaData& c) {
-  s& c._relId;
-  s& c._numberOfElements;
-  s& c._multiplicityColumn1;
-  s& c._multiplicityColumn2;
-  s& c._isFunctional;
-  s& c._blocks;
+  s | c._relId;
+  s | c._numberOfElements;
+  s | c._multiplicityColumn1;
+  s | c._multiplicityColumn2;
+  s | c._isFunctional;
+  s | c._blocks;
 }
 
 #endif  // QLEVER_COMPRESSEDRELATION_H
