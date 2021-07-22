@@ -19,10 +19,12 @@
 #include "../parser/TsvParser.h"
 #include "../parser/TurtleParser.h"
 #include "../util/BufferedVector.h"
+#include "../util/CompressionUsingZstd/ZstdWrapper.h"
 #include "../util/File.h"
 #include "../util/HashMap.h"
 #include "../util/MmapVector.h"
 #include "../util/Timer.h"
+#include "./CompressedRelation.h"
 #include "./ConstantsIndexCreation.h"
 #include "./DocsDB.h"
 #include "./IndexBuilderTypes.h"
@@ -95,24 +97,12 @@ class Index {
   // TODO: make those private and allow only const access
   // instantiations for the 6 Permutations used in QLever
   // They simplify the creation of permutations in the index class
-  PermutationImpl<SortByPOS, IndexMetaDataHmap> _POS =
-      Permutation::PermutationImpl<SortByPOS, IndexMetaDataHmap>(
-          SortByPOS(), "POS", ".pos", {1, 2, 0});
-  PermutationImpl<SortByPSO, IndexMetaDataHmap> _PSO =
-      Permutation::PermutationImpl<SortByPSO, IndexMetaDataHmap>(
-          SortByPSO(), "PSO", ".pso", {1, 0, 2});
-  PermutationImpl<SortBySOP, IndexMetaDataMmapView> _SOP =
-      Permutation::PermutationImpl<SortBySOP, IndexMetaDataMmapView>(
-          SortBySOP(), "SOP", ".sop", {0, 2, 1});
-  PermutationImpl<SortBySPO, IndexMetaDataMmapView> _SPO =
-      Permutation::PermutationImpl<SortBySPO, IndexMetaDataMmapView>(
-          SortBySPO(), "SPO", ".spo", {0, 1, 2});
-  PermutationImpl<SortByOPS, IndexMetaDataMmapView> _OPS =
-      Permutation::PermutationImpl<SortByOPS, IndexMetaDataMmapView>(
-          SortByOPS(), "OPS", ".ops", {2, 1, 0});
-  PermutationImpl<SortByOSP, IndexMetaDataMmapView> _OSP =
-      Permutation::PermutationImpl<SortByOSP, IndexMetaDataMmapView>(
-          SortByOSP(), "OSP", ".osp", {2, 0, 1});
+  Permutation::POS_T _POS{SortByPOS(), "POS", ".pos", {1, 2, 0}};
+  Permutation::PSO_T _PSO{SortByPSO(), "PSO", ".pso", {1, 0, 2}};
+  Permutation::SOP_T _SOP{SortBySOP(), "SOP", ".sop", {0, 2, 1}};
+  Permutation::SPO_T _SPO{SortBySPO(), "SPO", ".spo", {0, 1, 2}};
+  Permutation::OPS_T _OPS{SortByOPS(), "OPS", ".ops", {2, 1, 0}};
+  Permutation::OSP_T _OSP{SortByOSP(), "OSP", ".osp", {2, 0, 1}};
 
   const auto& POS() const { return _POS; }
   const auto& PSO() const { return _PSO; }
@@ -340,10 +330,8 @@ class Index {
     vector<float> res;
     if (_vocab.getId(key, &keyId) && p._meta.relationExists(keyId)) {
       auto rmd = p._meta.getRmd(keyId);
-      auto logM1 = rmd.getCol1LogMultiplicity();
-      res.push_back(static_cast<float>(pow(2, logM1)));
-      auto logM2 = rmd.getCol2LogMultiplicity();
-      res.push_back(static_cast<float>(pow(2, logM2)));
+      res.push_back(rmd.getCol1Multiplicity());
+      res.push_back(rmd.getCol2Multiplicity());
     } else {
       res.push_back(1);
       res.push_back(1);
@@ -375,12 +363,16 @@ class Index {
   template <class Permutation>
   void scan(Id key, IdTable* result, const Permutation& p,
             ad_utility::SharedConcurrentTimeoutTimer timer = nullptr) const {
-    if (p._meta.relationExists(key)) {
-      const FullRelationMetaData& rmd = p._meta.getRmd(key)._rmdPairs;
-      result->reserve(rmd.getNofElements() + 2);
-      result->resize(rmd.getNofElements());
-      p._file.read(result->data(), rmd.getNofElements() * 2 * sizeof(Id),
-                   rmd._startFullIndex, std::move(timer));
+    if constexpr (decltype(p._meta)::isUncompressed) {
+      if (p._meta.relationExists(key)) {
+        const FullRelationMetaData& rmd = p._meta.getRmd(key)._rmdPairs;
+        result->reserve(rmd.getNofElements() + 2);
+        result->resize(rmd.getNofElements());
+        p._file.read(result->data(), rmd.getNofElements() * 2 * sizeof(Id),
+                     rmd._startFullIndex, std::move(timer));
+      }
+    } else {
+      CompressedRelationMetaData::scan(key, result, p);
     }
   }
 
@@ -425,11 +417,18 @@ class Index {
   template <class PermutationInfo>
   void scan(const string& keyFirst, const string& keySecond, IdTable* result,
             const PermutationInfo& p) const {
-    LOG(DEBUG) << "Performing " << p._readableName << "  scan of relation "
-               << keyFirst << " with fixed subject: " << keySecond << "...\n";
     Id relId;
     Id subjId;
-    if (_vocab.getId(keyFirst, &relId) && _vocab.getId(keySecond, &subjId)) {
+    if (!_vocab.getId(keyFirst, &relId) || !_vocab.getId(keySecond, &subjId)) {
+      LOG(DEBUG) << "Key " << keyFirst << " or key " << keySecond
+                 << " were not found in the vocabulary \n";
+      return;
+    }
+
+    LOG(DEBUG) << "Performing " << p._readableName << "  scan of relation "
+               << keyFirst << " with fixed subject: " << keySecond << "...\n";
+
+    if constexpr (decltype(p._meta)::isUncompressed) {
       if (p._meta.relationExists(relId)) {
         auto rmd = p._meta.getRmd(relId);
         if (rmd.hasBlocks()) {
@@ -458,10 +457,10 @@ class Index {
       } else {
         LOG(DEBUG) << "No such relation.\n";
       }
+      LOG(DEBUG) << "Scan done, got " << result->size() << " elements.\n";
     } else {
-      LOG(DEBUG) << "No such second order key.\n";
+      CompressedRelationMetaData::scan(relId, subjId, result, p);
     }
-    LOG(DEBUG) << "Scan done, got " << result->size() << " elements.\n";
   }
 
  private:
@@ -553,9 +552,9 @@ class Index {
                             const Index::TripleVec& vec, size_t c0, size_t c1,
                             size_t c2);
 
-  pair<FullRelationMetaData, BlockBasedRelationMetaData> writeSwitchedRel(
-      ad_utility::File* out, off_t lastOffset, Id currentRel,
-      ad_utility::BufferedVector<array<Id, 2>>* buffer);
+  template <typename T>
+  T writeSwitchedRel(ad_utility::File* out, off_t lastOffset, Id currentRel,
+                     ad_utility::BufferedVector<array<Id, 2>>* buffer);
 
   // _______________________________________________________________________
   // Create a pair of permutations. Only works for valid pairs (PSO-POS,
@@ -653,9 +652,25 @@ class Index {
   // Returns:
   //   The Meta Data (Permutation offsets) for this relation,
   //   Careful: only multiplicity for first column is valid in return value
-  static pair<FullRelationMetaData, BlockBasedRelationMetaData> writeRel(
-      ad_utility::File& out, off_t currentOffset, Id relId,
-      const BufferedVector<array<Id, 2>>& data, size_t distinctC1,
+  template <typename T>
+  static T writeRel(ad_utility::File& out, off_t currentOffset, Id relId,
+                    const BufferedVector<array<Id, 2>>& data, size_t distinctC1,
+                    bool functional) {
+    if constexpr (std::is_same_v<T, CompressedRelationMetaData>) {
+      return writeCompressedRel(out, relId, data, distinctC1, functional);
+    } else {
+      return writeUncompressedRel(out, currentOffset, relId, data, distinctC1,
+                                  functional);
+    }
+  }
+
+  static pair<FullRelationMetaData, BlockBasedRelationMetaData>
+  writeUncompressedRel(ad_utility::File& out, off_t currentOffset, Id relId,
+                       const BufferedVector<array<Id, 2>>& data,
+                       size_t distinctC1, bool functional);
+  static CompressedRelationMetaData writeCompressedRel(
+      ad_utility::File& out, Id relId,
+      const ad_utility::BufferedVector<array<Id, 2>>& data, size_t distinctC1,
       bool functional);
 
   static void writeFunctionalRelation(

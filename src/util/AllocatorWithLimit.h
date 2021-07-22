@@ -133,6 +133,11 @@ class AllocatorWithLimit {
   /// makeAllocationMemoryLeftThreadsafeObject()
   explicit AllocatorWithLimit(detail::AllocationMemoryLeftThreadsafe ml)
       : memoryLeft_(std::move(ml)) {}
+
+  template <typename U>
+  AllocatorWithLimit<U> as() {
+    return AllocatorWithLimit<U>(memoryLeft_);
+  }
   AllocatorWithLimit() = delete;
 
   template <typename U>
